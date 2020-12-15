@@ -33,6 +33,7 @@ import com.mongodb.client.MongoDatabase;
 import com.mongodb.client.model.Aggregates;
 import com.mongodb.client.model.Filters;
 import com.mongodb.client.model.InsertManyOptions;
+import com.mongodb.client.model.UpdateOptions;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -50,6 +51,7 @@ import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.transforms.display.DisplayData;
+import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PDone;
@@ -132,6 +134,18 @@ public class MongoDbIO {
   /** Write data to MongoDB. */
   public static Write write() {
     return new AutoValue_MongoDbIO_Write.Builder()
+        .setMaxConnectionIdleTime(60000)
+        .setBatchSize(1024L)
+        .setSslEnabled(false)
+        .setIgnoreSSLCertificate(false)
+        .setSslInvalidHostNameAllowed(false)
+        .setOrdered(true)
+        .build();
+  }
+
+  /** Update data to MongoDB. */
+  public static Update update() {
+    return new AutoValue_MongoDbIO_Update.Builder()
         .setMaxConnectionIdleTime(60000)
         .setBatchSize(1024L)
         .setSslEnabled(false)
@@ -973,6 +987,212 @@ public class MongoDbIO {
         }
 
         batch.clear();
+      }
+
+      @Teardown
+      public void closeMongoClient() {
+        client.close();
+        client = null;
+      }
+    }
+  }
+
+  /** A {@link PTransform} to update to a MongoDB database. */
+  @AutoValue
+  public abstract static class Update
+      extends PTransform<PCollection<KV<Document, Document>>, PDone> {
+
+    abstract @Nullable String uri();
+
+    abstract int maxConnectionIdleTime();
+
+    abstract boolean sslEnabled();
+
+    abstract boolean sslInvalidHostNameAllowed();
+
+    abstract boolean ignoreSSLCertificate();
+
+    abstract boolean ordered();
+
+    abstract @Nullable String database();
+
+    abstract @Nullable String collection();
+
+    abstract long batchSize();
+
+    abstract Builder builder();
+
+    @AutoValue.Builder
+    abstract static class Builder {
+      abstract Builder setUri(String uri);
+
+      abstract Builder setMaxConnectionIdleTime(int maxConnectionIdleTime);
+
+      abstract Builder setSslEnabled(boolean value);
+
+      abstract Builder setSslInvalidHostNameAllowed(boolean value);
+
+      abstract Builder setIgnoreSSLCertificate(boolean value);
+
+      abstract Builder setOrdered(boolean value);
+
+      abstract Builder setDatabase(String database);
+
+      abstract Builder setCollection(String collection);
+
+      abstract Builder setBatchSize(long batchSize);
+
+      abstract Update build();
+    }
+
+    /**
+     * Define the location of the MongoDB instances using an URI. The URI describes the hosts to be
+     * used and some options.
+     *
+     * <p>The format of the URI is:
+     *
+     * <pre>{@code
+     * mongodb://[username:password@]host1[:port1],...[,hostN[:portN]]][/[database][?options]]
+     * }</pre>
+     *
+     * <p>Where:
+     *
+     * <ul>
+     *   <li>{@code mongodb://} is a required prefix to identify that this is a string in the
+     *       standard connection format.
+     *   <li>{@code username:password@} are optional. If given, the driver will attempt to login to
+     *       a database after connecting to a database server. For some authentication mechanisms,
+     *       only the username is specified and the password is not, in which case the ":" after the
+     *       username is left off as well.
+     *   <li>{@code host1} is the only required part of the URI. It identifies a server address to
+     *       connect to.
+     *   <li>{@code :portX} is optional and defaults to {@code :27017} if not provided.
+     *   <li>{@code /database} is the name of the database to login to and thus is only relevant if
+     *       the {@code username:password@} syntax is used. If not specified, the "admin" database
+     *       will be used by default. It has to be equivalent with the database you specific with
+     *       {@link Write#withDatabase(String)}.
+     *   <li>{@code ?options} are connection options. Note that if {@code database} is absent there
+     *       is still a {@code /} required between the last {@code host} and the {@code ?}
+     *       introducing the options. Options are name=value pairs and the pairs are separated by
+     *       "{@code &}". You can pass the {@code MaxConnectionIdleTime} connection option via
+     *       {@link Write#withMaxConnectionIdleTime(int)}.
+     * </ul>
+     */
+    public Update withUri(String uri) {
+      checkArgument(uri != null, "uri can not be null");
+      return builder().setUri(uri).build();
+    }
+
+    /** Sets the maximum idle time for a pooled connection. */
+    public Update withMaxConnectionIdleTime(int maxConnectionIdleTime) {
+      return builder().setMaxConnectionIdleTime(maxConnectionIdleTime).build();
+    }
+
+    /** Enable ssl for connection. */
+    public Update withSSLEnabled(boolean sslEnabled) {
+      return builder().setSslEnabled(sslEnabled).build();
+    }
+
+    /** Enable invalidHostNameAllowed for ssl for connection. */
+    public Update withSSLInvalidHostNameAllowed(boolean invalidHostNameAllowed) {
+      return builder().setSslInvalidHostNameAllowed(invalidHostNameAllowed).build();
+    }
+
+    /**
+     * Enables ordered bulk insertion (default: true).
+     *
+     * @see <a href=
+     *     "https://github.com/mongodb/specifications/blob/master/source/crud/crud.rst#basic">
+     *     specification of MongoDb CRUD operations</a>
+     */
+    public Update withOrdered(boolean ordered) {
+      return builder().setOrdered(ordered).build();
+    }
+
+    /** Enable ignoreSSLCertificate for ssl for connection (allow for self signed certificates). */
+    public Update withIgnoreSSLCertificate(boolean ignoreSSLCertificate) {
+      return builder().setIgnoreSSLCertificate(ignoreSSLCertificate).build();
+    }
+
+    /** Sets the database to use. */
+    public Update withDatabase(String database) {
+      checkArgument(database != null, "database can not be null");
+      return builder().setDatabase(database).build();
+    }
+
+    /** Sets the collection where to write data in the database. */
+    public Update withCollection(String collection) {
+      checkArgument(collection != null, "collection can not be null");
+      return builder().setCollection(collection).build();
+    }
+
+    /** Define the size of the batch to group write operations. */
+    public Update withBatchSize(long batchSize) {
+      checkArgument(batchSize >= 0, "Batch size must be >= 0, but was %s", batchSize);
+      return builder().setBatchSize(batchSize).build();
+    }
+
+    @Override
+    public PDone expand(PCollection<KV<Document, Document>> input) {
+      checkArgument(uri() != null, "withUri() is required");
+      checkArgument(database() != null, "withDatabase() is required");
+      checkArgument(collection() != null, "withCollection() is required");
+
+      input.apply(ParDo.of(new UpdateFn(this)));
+      return PDone.in(input.getPipeline());
+    }
+
+    @Override
+    public void populateDisplayData(DisplayData.Builder builder) {
+      builder.add(DisplayData.item("uri", uri()));
+      builder.add(DisplayData.item("maxConnectionIdleTime", maxConnectionIdleTime()));
+      builder.add(DisplayData.item("sslEnable", sslEnabled()));
+      builder.add(DisplayData.item("sslInvalidHostNameAllowed", sslInvalidHostNameAllowed()));
+      builder.add(DisplayData.item("ignoreSSLCertificate", ignoreSSLCertificate()));
+      builder.add(DisplayData.item("ordered", ordered()));
+      builder.add(DisplayData.item("database", database()));
+      builder.add(DisplayData.item("collection", collection()));
+      builder.add(DisplayData.item("batchSize", batchSize()));
+    }
+
+    static class UpdateFn extends DoFn<KV<Document, Document>, Void> {
+      private final Update spec;
+      private transient MongoClient client;
+      private List<Document> batch;
+
+      UpdateFn(Update spec) {
+        this.spec = spec;
+      }
+
+      @Setup
+      public void createMongoClient() {
+        client =
+            new MongoClient(
+                new MongoClientURI(
+                    spec.uri(),
+                    getOptions(
+                        spec.maxConnectionIdleTime(),
+                        spec.sslEnabled(),
+                        spec.sslInvalidHostNameAllowed(),
+                        spec.ignoreSSLCertificate())));
+      }
+
+      @ProcessElement
+      public void processElement(ProcessContext ctx) {
+        // Need to copy the document because mongoCollection.insertMany() will mutate it
+        // before inserting (will assign an id).
+        MongoDatabase mongoDatabase = client.getDatabase(spec.database());
+        MongoCollection<Document> mongoCollection = mongoDatabase.getCollection(spec.collection());
+
+        UpdateOptions options = new UpdateOptions().upsert(true);
+
+        try {
+          mongoCollection.updateOne(ctx.element().getKey(), ctx.element().getValue(), options);
+        } catch (MongoBulkWriteException e) {
+          if (spec.ordered()) {
+            throw e;
+          }
+        }
       }
 
       @Teardown
