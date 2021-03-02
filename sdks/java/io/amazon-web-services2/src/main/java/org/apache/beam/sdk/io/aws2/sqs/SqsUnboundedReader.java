@@ -17,23 +17,18 @@
  */
 package org.apache.beam.sdk.io.aws2.sqs;
 
+import static java.util.stream.Collectors.groupingBy;
+
 import java.io.Serializable;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.NoSuchElementException;
-import java.util.Queue;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 import org.apache.beam.sdk.io.UnboundedSource;
 import org.apache.beam.sdk.io.UnboundedSource.CheckpointMark;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.joda.time.Instant;
-import software.amazon.awssdk.services.sqs.model.DeleteMessageRequest;
-import software.amazon.awssdk.services.sqs.model.Message;
-import software.amazon.awssdk.services.sqs.model.MessageSystemAttributeName;
-import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
-import software.amazon.awssdk.services.sqs.model.ReceiveMessageResponse;
+import software.amazon.awssdk.services.sqs.model.*;
 
 class SqsUnboundedReader extends UnboundedSource.UnboundedReader<SqsMessage>
     implements Serializable {
@@ -131,6 +126,42 @@ class SqsUnboundedReader extends UnboundedSource.UnboundedReader<SqsMessage>
   public void close() {}
 
   void delete(final Collection<Message> messages) {
+    AtomicInteger counter = new AtomicInteger();
+    messages.stream()
+        .filter(m -> messagesToDelete.contains(m))
+        .collect(groupingBy(x -> counter.getAndIncrement() / 10))
+        .values()
+        .forEach(
+            batch -> {
+              DeleteMessageBatchRequest request =
+                  DeleteMessageBatchRequest.builder()
+                      .queueUrl(source.getRead().queueUrl())
+                      .entries(
+                          batch.stream()
+                              .map(
+                                  m ->
+                                      DeleteMessageBatchRequestEntry.builder()
+                                          .id(m.messageId())
+                                          .receiptHandle(m.receiptHandle())
+                                          .build())
+                              .collect(Collectors.toList()))
+                      .build();
+              source.getSqs().deleteMessageBatch(request);
+              Instant currentMessageTimestamp =
+                  batch.stream()
+                      .map(
+                          m ->
+                              getTimestamp(
+                                  m.attributes()
+                                      .get(
+                                          MessageSystemAttributeName
+                                              .APPROXIMATE_FIRST_RECEIVE_TIMESTAMP)))
+                      .max(Comparator.comparing(Instant::getMillis))
+                      .orElse(oldestPendingTimestamp);
+              if (currentMessageTimestamp.isAfter(oldestPendingTimestamp)) {
+                oldestPendingTimestamp = currentMessageTimestamp;
+              }
+            });
     for (Message message : messages) {
       if (messagesToDelete.contains(message)) {
         DeleteMessageRequest deleteMessageRequest =
