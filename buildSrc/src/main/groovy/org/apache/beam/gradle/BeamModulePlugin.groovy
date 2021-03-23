@@ -359,7 +359,7 @@ class BeamModulePlugin implements Plugin<Project> {
     // otherwise append '-SNAPSHOT'
     project.version = '2.28.0'
     if (!isRelease(project)) {
-      project.version += '-SNAPSHOT'
+      project.version += '-' + 'git rev-parse --short=8 HEAD'.execute().text.trim()
     }
 
     // Default to dash-separated directories for artifact base name,
@@ -661,11 +661,12 @@ class BeamModulePlugin implements Plugin<Project> {
         url "file://${project.rootProject.projectDir}/testPublication/"
       }
       maven {
-        url(project.properties['distMgmtSnapshotsUrl'] ?: isRelease(project)
-            ? 'https://repository.apache.org/service/local/staging/deploy/maven2'
-            : 'https://repository.apache.org/content/repositories/snapshots')
-        name(project.properties['distMgmtServerId'] ?: isRelease(project)
-            ? 'apache.releases.https' : 'apache.snapshots.https')
+        name("GitHubPackages")
+        url("https://maven.pkg.github.com/ztore/beam")
+        credentials {
+          username = System.getenv("GITHUB_ACTOR")
+          password = System.getenv("GITHUB_TOKEN")
+        }
         // The maven settings plugin will load credentials from ~/.m2/settings.xml file that a user
         // has configured with the Apache release and snapshot staging credentials.
         // <settings>
